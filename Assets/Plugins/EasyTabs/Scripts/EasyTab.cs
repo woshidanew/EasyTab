@@ -13,13 +13,8 @@ public enum TabLayout
 public enum TabType
 {
     Image,
-    Text
-}
-
-public enum TextType
-{
-    BasicText,
-    TextMeshPro
+    Text,
+    ImageText
 }
 
 public enum StretchType
@@ -30,7 +25,13 @@ public enum StretchType
     CenterMiddle
 }
 
-public class EasyTab : MonoBehaviour
+/// <summary>
+/// 分页栏运行时组件。
+/// 负责：保存配置、维护运行时引用缓存、在游戏运行时切换选中态表现。
+/// 编辑器授权逻辑（生成页签、Brush Format、各类 Ready 按钮）拆分到 EasyTabAuthoring.cs，
+/// 运行时缓存的数据结构见 TabItem.cs。
+/// </summary>
+public partial class EasyTab : MonoBehaviour
 {
     [Tooltip("Which layout this tab will use? A horizontal one or a vertical one?")]
     public TabLayout _tabLayout;
@@ -44,14 +45,12 @@ public class EasyTab : MonoBehaviour
     public Sprite _tabCommonSprite = null;
     [Tooltip("How many buttons will this tab have? Can't be less than 1.")]
     public int _tabCount = 1;
-    [Tooltip("Which type this tab will be? A tab with images or a tab with texts?")]
+    [Tooltip("Which type this tab will be? A tab with images, texts, or both?")]
     public TabType _tabType;
-    [Tooltip("The texts for a text type tab, will be added from the left to right.")]
+    [Tooltip("The texts for a text or image-text type tab, will be added from the left to right.")]
     public List<string> _strings;
-    [Tooltip("The image assets for an image type tab, will be added from the left to right.")]
+    [Tooltip("The image assets for an image or image-text type tab, will be added from the left to right.")]
     public List<Sprite> _sprites;
-    [Tooltip("Which type of text component will be used?")]
-    public TextType _textType;
 
 
     [Tooltip("The width of one button in this tab.")]
@@ -66,554 +65,193 @@ public class EasyTab : MonoBehaviour
     public float _jump;
     [Tooltip("The position of the image or text on tab buttons in unselected state.")]
     public Vector2 _originalPos;
+    [Tooltip("The position of the text on tab buttons in unselected state, only used by the image-text type.")]
+    public Vector2 _textOriginalPos;
 
     [Tooltip("The color used on the selected tab buttons, for images or texts.")]
     public Color32 _selectedColor = new Color32(255, 255, 255, 255);
     [Tooltip("The color used on the unselected tab buttons, for images or texts.")]
     public Color32 _commonColor = new Color32(255, 255, 255, 255);
+    [Tooltip("The color used on the selected tab text, only used by the image-text type.")]
+    public Color32 _textSelectedColor = new Color32(255, 255, 255, 255);
+    [Tooltip("The color used on the unselected tab text, only used by the image-text type.")]
+    public Color32 _textCommonColor = new Color32(255, 255, 255, 255);
 
     public bool _dynamicGenerate;
 
     public GameObject _dynamicTab;
 
+    [Tooltip("编辑器生成的页签文本节点列表（授权期使用，保留以兼容既有数据）。")]
     public List<GameObject> _tabTexts;
+    [Tooltip("编辑器生成的页签图标节点列表（授权期使用，保留以兼容既有数据）。")]
     public List<GameObject> _tabImages;
+    [Tooltip("编辑器生成的页签按钮节点列表（授权期使用，保留以兼容既有数据）。")]
     public List<GameObject> _tabs;
 
-    private HorizontalLayoutGroup _horizonGroup = null;
-    private VerticalLayoutGroup _verticalGroup = null;
-    private Image _backImg = null;
-    private int _testIndex;
+    /// <summary>
+    /// 运行时引用缓存：由编辑器生成（或运行时兜底重建）后写入并序列化，
+    /// 使 SelectedViewOf 等运行时代码不再使用 transform.Find / GetComponent。
+    /// </summary>
+    [SerializeField] private List<TabItem> _tabItems = new();
 
-    public void Init()
+    private void Awake()
     {
-        if(_tabLayout == TabLayout.Horizontal)
-        {
-            _horizonGroup = gameObject.GetComponent<HorizontalLayoutGroup>();
-            if (!_horizonGroup) _horizonGroup = gameObject.AddComponent<HorizontalLayoutGroup>();
-            _horizonGroup.childControlHeight = false;
-            _horizonGroup.childControlWidth = false;
-            _horizonGroup.childAlignment = TextAnchor.MiddleCenter;
-        }
-        else
-        {
-            _verticalGroup = gameObject.GetComponent<VerticalLayoutGroup>();
-            if (!_verticalGroup) _verticalGroup = gameObject.AddComponent<VerticalLayoutGroup>();
-            _verticalGroup.childControlHeight = false;
-            _verticalGroup.childControlWidth = false;
-            _verticalGroup.childAlignment = TextAnchor.MiddleCenter;
-        }
-
-        
-        //_horizonGroup.childForceExpandWidth = false;
-        //_horizonGroup.childForceExpandHeight = false;
-        if (_backgroud && !_backImg)
-        {
-            _backImg = gameObject.GetComponent<Image>();
-            if(!_backImg) _backImg = gameObject.AddComponent<Image>();
-            _backImg.sprite = _backgroud;
-        }
-        _tabs = new List<GameObject>();
-        _tabTexts = new List<GameObject>();
-        _tabImages = new List<GameObject>();
-        _testIndex = 0;
+        EnsureTabItems();
     }
 
-        
-    public void GenerateTabs()
+    /// <summary>
+    /// 依据 _tabs / _tabImages / _tabTexts 重建运行时引用缓存。
+    /// 编辑器按钮、数据迁移（旧 prefab 尚无缓存）与运行时兜底都会调用。
+    /// </summary>
+    public void RebuildTabItems()
     {
-        while (transform.childCount > 0)
+        _tabItems.Clear();
+        for (int i = 0; i < _tabs.Count; i++)
         {
-            DestroyImmediate(transform.GetChild(0).gameObject);
-        }
-
-        Init();
-
-        for (int i = 0; i < _tabCount; i++)
-        {
-            GameObject tabButton = new GameObject("Tab" + i);
-            RectTransform tabButtonRTranform = tabButton.AddComponent<RectTransform>();
-            
-            //UGUI Generating
-            tabButton.AddComponent<Button>();
-            Image initImg = tabButton.AddComponent<Image>();
-            initImg.enabled = false;
-            
-            tabButton.transform.SetParent(transform);
-            tabButton.transform.localScale = Vector3.one;
-            _tabs.Add(tabButton);
-
-            GameObject tabOn = new GameObject("TabOn");
-            tabOn.transform.SetParent(tabButton.transform);
-            Image onImg = tabOn.AddComponent<Image>();
-            onImg.sprite = _tabSelectedSprite;
-            onImg.type = Image.Type.Sliced;
-            RectTransformStrech(tabOn, StretchType.Full);
-            tabOn.transform.localScale = Vector3.one;
-
-            GameObject tabOff = new GameObject("TabOff");
-            tabOff.transform.SetParent(tabButton.transform);
-            Image offImg = tabOff.AddComponent<Image>();
-            offImg.sprite = _tabCommonSprite;
-            offImg.type = Image.Type.Sliced;
-            RectTransformStrech(tabOff, StretchType.Full);
-            tabOff.transform.localScale = Vector3.one;
-
-            _tabWidth = tabButtonRTranform.sizeDelta.x;
-            _tabHeight = tabButtonRTranform.sizeDelta.y;
-
-            if(_tabType == TabType.Image)
+            Transform tab = _tabs[i].transform;
+            TabItem item = new()
             {
-                GameObject tabImage = new GameObject("TabImage");
-                tabImage.transform.SetParent(tabButton.transform);
-                Image img = tabImage.AddComponent<Image>();
-                img.sprite = _sprites[i];
-                _tabImages.Add(tabImage);
-                tabImage.transform.localScale = Vector3.one;
-            }
-            else
+                button = _tabs[i].GetComponent<Button>(),
+                tabOn = tab.Find("TabOn").gameObject,
+                tabOff = tab.Find("TabOff").gameObject
+            };
+            if (i < _tabImages.Count)
             {
-                GameObject tabText = new GameObject("TabText");
-                tabText.transform.SetParent(tabButton.transform);
-                if (_textType == TextType.BasicText)
-                {
-                    Text txt = tabText.AddComponent<Text>();
-                    txt.text = _strings[i];
-                    _tabTexts.Add(tabText);
-                    tabText.transform.localScale = Vector3.one;
-                }
-                else
-                {
-                    TextMeshProUGUI txt = tabText.AddComponent<TextMeshProUGUI>();
-                    txt.text = _strings[i];
-                    txt.enableAutoSizing = true;
-                    _tabTexts.Add(tabText);
-                    tabText.transform.localScale = Vector3.one;
-                }
+                item.image = _tabImages[i].GetComponent<Image>();
+                item.imageRect = _tabImages[i].GetComponent<RectTransform>();
             }
-        }
-    }
-
-    /*
-    public void GenerateTabsUGUI()
-    {
-        while (transform.childCount > 0)
-        {
-            DestroyImmediate(transform.GetChild(0).gameObject);
-        }
-
-        Init();
-
-        for (int i = 0; i < _tabCount; i++)
-        {
-            GameObject tab = new GameObject("Tab" + i);
-            Button tabButton = tab.AddComponent<Button>();
-            Image initImg = tab.AddComponent<Image>();
-            initImg.enabled = false;
-
-            RectTransform tabButtonRTranform = tabButton.GetComponent<RectTransform>();
-            tab.transform.SetParent(transform);
-            initImg.sprite = _tabOffSprite;
-            tabButton.transition = Selectable.Transition.SpriteSwap;
-            SpriteState btnSpriteState = new SpriteState();
-            btnSpriteState = tabButton.spriteState;
-            btnSpriteState.selectedSprite = _tabOnSprite;
-            btnSpriteState.pressedSprite = _tabOnSprite;
-            tabButton.spriteState = btnSpriteState;
-            _tabs.Add(tab);
-            tab.transform.localScale = Vector3.one;
-
-            GameObject tabOn = new GameObject("TabOn");
-            tabOn.transform.SetParent(tabButton.transform);
-            Image onImg = tabOn.AddComponent<Image>();
-            onImg.sprite = _tabOnSprite;
-            onImg.type = Image.Type.Sliced;
-            RectTransformStrech(tabOn, StretchType.Full);
-            tabOn.transform.localScale = Vector3.one;
-
-            GameObject tabOff = new GameObject("TabOff");
-            tabOff.transform.SetParent(tabButton.transform);
-            Image offImg = tabOff.AddComponent<Image>();
-            offImg.sprite = _tabOffSprite;
-            offImg.type = Image.Type.Sliced;
-            RectTransformStrech(tabOff, StretchType.Full);
-            tabOff.transform.localScale = Vector3.one;
-
-            _tabWidth = tabButtonRTranform.sizeDelta.x;
-            _tabHeight = tabButtonRTranform.sizeDelta.y;
-
-            if (_tabType == TabType.Image)
+            if (i < _tabTexts.Count)
             {
-                GameObject tabImage = new GameObject("TabImage");
-                tabImage.transform.SetParent(tabButton.transform);
-                Image img = tabImage.AddComponent<Image>();
-                img.sprite = _sprites[i];
-                _tabImages.Add(tabImage);
-                tabImage.transform.localScale = Vector3.one;
+                item.text = _tabTexts[i].GetComponent<TextMeshProUGUI>();
+                item.textRect = _tabTexts[i].GetComponent<RectTransform>();
             }
-            else
-            {
-                GameObject tabText = new GameObject("TabText");
-                tabText.transform.SetParent(tabButton.transform);
-                TextMeshProUGUI txt = tabText.AddComponent<TextMeshProUGUI>();
-                txt.text = _strings[i];
-                txt.enableAutoSizing = true;
-                _tabTexts.Add(tabText);
-                tabText.transform.localScale = Vector3.one;
-            }
-        }
-        //TabChildren = _tabs;
-    }*/
-
-    public void SetCustomItem()
-    {
-        if (_tabType == TabType.Image)
-        {
-            if (_tabImages.Count < 1)
-                return;
-            _customTab = _tabImages[0];
-        }
-        else
-        {
-            if (_tabTexts.Count < 1)
-                return;
-            _customTab = _tabTexts[0];
+            _tabItems.Add(item);
         }
     }
 
-    public bool HasTabFinishInit()
+    private void EnsureTabItems()
     {
-        if (_tabs == null)
-            return false;
-        if (_tabs.Count >= _tabCount)
-            return true;
-        else
-            return false;
-    }
-        
-    public bool IsImagesORTextThere()
-    {
-        if (_tabType == TabType.Image)
-        {
-            if (_tabImages.Count >= _tabCount)
-                return true;
-            else
-                return false;
-        }
-        else
-        {
-            if (_tabTexts.Count >= _tabCount)
-                return true;
-            else
-                return false;
-        }
-    }
-
-    public void UpdateTabSize(float width, float height)
-    {
-        if (_tabs.Count < 1)
+        if (_tabItems.Count == _tabs.Count)
             return;
-        foreach (GameObject tab in _tabs)
-        {
-            RectTransform tabButtonRTranform = tab.GetComponent<RectTransform>();
-            tabButtonRTranform.sizeDelta = new Vector2(width, height);
-        }
+        RebuildTabItems();
     }
 
-    public void UpdateImageOrText()
+    /// <summary>
+    /// 切换选中态：设置选中页签的表现（选中/未选中贴图显隐、颜色、jump 位移）。
+    /// 运行时可安全高频调用，内部只访问已缓存的引用。
+    /// </summary>
+    public void SelectedViewOf(int index)
     {
-        if (_tabType == TabType.Image)
+        EnsureTabItems();
+        CaptureTextBase();
+
+        for (int i = 0; i < _tabs.Count; i++)
         {
-            for (int i = 0; i < _tabImages.Count; i ++)
+            TabItem item = _tabItems[i];
+            bool isSelected = i == index;
+            item.tabOn.SetActive(isSelected);
+            item.tabOff.SetActive(!isSelected);
+
+            if (_tabType == TabType.Image || _tabType == TabType.ImageText)
             {
-                _tabImages[i].GetComponent<Image>().sprite = _sprites[i];
+                item.image.color = isSelected ? _selectedColor : _commonColor;
+                ApplyJump(item.imageRect, _originalPos, isSelected);
             }
-        }
-        else
-        {
-            if(_textType == TextType.BasicText)
+
+            if (_tabType == TabType.Text || _tabType == TabType.ImageText)
             {
-                for (int i = 0; i < _tabTexts.Count; i++)
-                {
-                    _tabTexts[i].GetComponent<Text>().text = _strings[i];
-                }
-            }
-            else
-            {
-                for (int i = 0; i < _tabTexts.Count; i++)
-                {
-                    _tabTexts[i].GetComponent<TextMeshProUGUI>().text = _strings[i];
-                }
+                bool imageText = _tabType == TabType.ImageText;
+                item.text.color = imageText
+                    ? (isSelected ? _textSelectedColor : _textCommonColor)
+                    : (isSelected ? _selectedColor : _commonColor);
+                ApplyJump(item.textRect, imageText ? _textOriginalPos : _originalPos, isSelected);
             }
         }
     }
 
-    public void BrushOtherTabItems()
+    /// <summary>
+    /// 为指定页签按钮注册点击事件：先执行外部回调，再切换到选中态。
+    /// </summary>
+    public void RegisterTabClickEvent(int index, Action onClick = null)
     {
-#if UNITY_EDITOR
-        if (_tabType == TabType.Image)
+        EnsureTabItems();
+        _tabItems[index].button.onClick.AddListener(() =>
         {
-            if (_tabImages.Count < 1)
-                return;
-                
-            RectTransform customRt = _tabImages[0].GetComponent<RectTransform>();
-            for (int i = 1; i < _tabImages.Count; i ++)
-            {
-                RectTransform tabImgRTranform = _tabImages[i].GetComponent<RectTransform>();
-                UnityEditorInternal.ComponentUtility.CopyComponent(customRt);
-                UnityEditorInternal.ComponentUtility.PasteComponentValues(tabImgRTranform);
-            }
-            _originalPos = customRt.anchoredPosition;
-            //Debug.Log(_originalPos + "@@@@@@");
-        }
-        else
-        {
-            if (_tabTexts.Count < 1)
-                return;
-
-            RectTransform customRt = _tabTexts[0].GetComponent<RectTransform>();
-            if (_textType == TextType.BasicText)
-            {
-                Text customTxt = _tabTexts[0].GetComponent<Text>();
-                for (int i = 1; i < _tabTexts.Count; i++)
-                {
-                    RectTransform tabTxtRTranform = _tabTexts[i].GetComponent<RectTransform>();
-                    UnityEditorInternal.ComponentUtility.CopyComponent(customRt);
-                    UnityEditorInternal.ComponentUtility.PasteComponentValues(tabTxtRTranform);
-
-                    Text tabTxt = _tabTexts[i].GetComponent<Text>();
-                    string crtText = tabTxt.text;
-                    UnityEditorInternal.ComponentUtility.CopyComponent(customTxt);
-                    UnityEditorInternal.ComponentUtility.PasteComponentValues(tabTxt);
-                    tabTxt.text = crtText;
-                }
-            }
-            else
-            {
-                TextMeshProUGUI customTMP = _tabTexts[0].GetComponent<TextMeshProUGUI>();
-                for (int i = 1; i < _tabTexts.Count; i++)
-                {
-                    RectTransform tabTxtRTranform = _tabTexts[i].GetComponent<RectTransform>();
-                    UnityEditorInternal.ComponentUtility.CopyComponent(customRt);
-                    UnityEditorInternal.ComponentUtility.PasteComponentValues(tabTxtRTranform);
-
-                    TextMeshProUGUI tabTxtTMP = _tabTexts[i].GetComponent<TextMeshProUGUI>();
-                    string crtText = tabTxtTMP.text;
-                    UnityEditorInternal.ComponentUtility.CopyComponent(customTMP);
-                    UnityEditorInternal.ComponentUtility.PasteComponentValues(tabTxtTMP);
-                    tabTxtTMP.text = crtText;
-                }
-            }
-            _originalPos = customRt.anchoredPosition;
-        }
-#endif
+            onClick?.Invoke();
+            SelectedViewOf(index);
+        });
     }
 
-    public void SetFixedReady()
-    {
-        SelectedViewOf(0);
-    }
-
-    public void SimulateButtonView()
-    {
-        SelectedViewOf(_testIndex);
-        _testIndex ++;
-        if (_testIndex >= _tabs.Count)
-            _testIndex = 0;
-    }
-
-    public void SetDynamicReady()
-    {
-        _dynamicTab = _tabs[0];
-        while (transform.childCount > 1)
-        {
-            DestroyImmediate(transform.GetChild(1).gameObject);
-        }
-        _tabs.Clear();
-        _tabImages.Clear();
-        _tabTexts.Clear();
-        _dynamicTab.SetActive(false);
-    }
-
-    //Dynamic Create button from design template
+    /// <summary>
+    /// 动态模式下，从 _dynamicTab 模板实例化一个页签按钮并写入缓存。
+    /// </summary>
     public void CreateTabButton(Sprite icon, string text)
     {
         GameObject tabButton = Instantiate(_dynamicTab);
         tabButton.SetActive(true);
         tabButton.transform.SetParent(transform);
         _tabs.Add(tabButton);
-        if (_tabType == TabType.Image)
+
+        Transform tab = tabButton.transform;
+        TabItem item = new()
         {
-            Transform tabImgTransform = tabButton.transform.Find("TabImage");
-            _tabImages.Add(tabImgTransform.gameObject);
-            tabImgTransform.GetComponent<Image>().sprite = icon;
-        }
-        else
+            button = tabButton.GetComponent<Button>(),
+            tabOn = tab.Find("TabOn").gameObject,
+            tabOff = tab.Find("TabOff").gameObject
+        };
+        if (_tabType == TabType.Image || _tabType == TabType.ImageText)
         {
-            Transform tabTxtTransform = tabButton.transform.Find("TabText");
-            _tabTexts.Add(tabTxtTransform.gameObject);
-            if (_textType == TextType.BasicText)
-            {
-                tabTxtTransform.GetComponent<Text>().text = text;
-            }
-            else
-            {
-                tabTxtTransform.GetComponent<TextMeshProUGUI>().text = text;
-            }
+            Transform tabImg = tab.Find("TabImage");
+            _tabImages.Add(tabImg.gameObject);
+            item.image = tabImg.GetComponent<Image>();
+            item.imageRect = tabImg.GetComponent<RectTransform>();
+            item.image.sprite = icon;
         }
-    }
-
-    //Register click event
-    public void RegisterTabClickEvent(int index, Action onClick = null)
-    {
-        Button tabButton = _tabs[index].GetComponent<Button>();
-        tabButton.onClick.AddListener(() => {
-            onClick?.Invoke();
-            SelectedViewOf(index);
-        });  
-    }
-
-    public void SelectedViewOf(int index)
-    {
-        for (int i = 0; i < _tabs.Count; i ++)
+        if (_tabType == TabType.Text || _tabType == TabType.ImageText)
         {
-            if(i == index)
-            {
-                _tabs[i].transform.Find("TabOn").gameObject.SetActive(true);
-                _tabs[i].transform.Find("TabOff").gameObject.SetActive(false);
-
-                GameObject selectItem = null;
-                if (_tabType == TabType.Image)
-                {
-                    Image img = _tabImages[i].GetComponent<Image>();
-                    img.color = _selectedColor;
-                    selectItem = _tabImages[i];
-                }
-                else
-                {
-                    if (_textType == TextType.BasicText)
-                    {
-                        Text tmp = _tabTexts[i].GetComponent<Text>();
-                        tmp.color = _selectedColor;
-                        selectItem = _tabTexts[i];
-                    }
-                    else
-                    {
-                        TextMeshProUGUI tmp = _tabTexts[i].GetComponent<TextMeshProUGUI>();
-                        tmp.color = _selectedColor;
-                        selectItem = _tabTexts[i];
-                    }
-                }
-                if(_tabLayout == TabLayout.Horizontal)
-                    selectItem.GetComponent<RectTransform>().anchoredPosition = new Vector2(_originalPos.x, _originalPos.y + _jump);
-                else
-                    selectItem.GetComponent<RectTransform>().anchoredPosition = new Vector2(_originalPos.x + _jump, _originalPos.y);
-            }
-            else
-            {
-                _tabs[i].transform.Find("TabOn").gameObject.SetActive(false);
-                _tabs[i].transform.Find("TabOff").gameObject.SetActive(true);
-                    
-                GameObject unSelectItem = null;
-                if (_tabType == TabType.Image)
-                {
-                    Image img = _tabImages[i].GetComponent<Image>();
-                    img.color = _commonColor;
-                    unSelectItem = _tabImages[i];
-                }
-                else
-                {
-                    if (_textType == TextType.BasicText)
-                    {
-                        Text tmp = _tabTexts[i].GetComponent<Text>();
-                        tmp.color = _commonColor;
-                        unSelectItem = _tabTexts[i];
-                    }
-                    else
-                    {
-                        TextMeshProUGUI tmp = _tabTexts[i].GetComponent<TextMeshProUGUI>();
-                        tmp.color = _commonColor;
-                        unSelectItem = _tabTexts[i];
-                    }
-                    
-                }
-                unSelectItem.GetComponent<RectTransform>().anchoredPosition = _originalPos;
-                //Debug.Log(_originalPos + "22222@@@@@@");
-            }
+            Transform tabTxt = tab.Find("TabText");
+            _tabTexts.Add(tabTxt.gameObject);
+            item.text = tabTxt.GetComponent<TextMeshProUGUI>();
+            item.textRect = tabTxt.GetComponent<RectTransform>();
+            item.text.text = text;
         }
+        _tabItems.Add(item);
     }
 
-    private void RectTransformStrech(GameObject go, StretchType type)
+    /// <summary>
+    /// 记录 ImageText 类型下文字的未选中基准坐标。
+    /// 取当前处于未选中态的第一个 tab 作为来源，避免把已跳起的选中 tab 坐标误当成基准；
+    /// 仅在基准仍为零（尚未配置）时写入，不会覆盖已经设置好的值。
+    /// </summary>
+    private void CaptureTextBase()
     {
-        RectTransform rt = go.GetComponent<RectTransform>();
-        rt.anchoredPosition = Vector2.zero;
-        switch (type)
+        if (_tabType != TabType.ImageText || _textOriginalPos != Vector2.zero || _tabTexts.Count == 0)
+            return;
+
+        int source = -1;
+        for (int i = 0; i < _tabs.Count; i++)
         {
-            case StretchType.Horizontal:
-                float crtHeight = rt.sizeDelta.y;
-                rt.anchorMin = new Vector2(0, 0.5f);
-                rt.anchorMax = new Vector2(1, 0.5f);
-                rt.sizeDelta = new Vector2(0, crtHeight);
-                break;
-            case StretchType.Vertical:
-                float crtWidth = rt.sizeDelta.x;
-                rt.anchorMin = new Vector2(0.5f, 0);
-                rt.anchorMax = new Vector2(0.5f, 1);
-                rt.sizeDelta = new Vector2(crtWidth, 0);
-                break;
-            case StretchType.Full:
-                rt.anchorMin = Vector2.zero;
-                rt.anchorMax = Vector2.one;
-                rt.sizeDelta = Vector2.zero;
-                break;
-            case StretchType.CenterMiddle:
-                Vector2 midValue = new Vector2(0.5f, 0.5f);
-                rt.anchorMin = midValue;
-                rt.anchorMax = midValue;
-                break;
+            TabItem item = _tabItems[i];
+            if (item.tabOn.activeSelf && !item.tabOff.activeSelf)
+                continue;
+            source = i;
+            break;
         }
-    }
-}
+        if (source < 0)
+            return;
 
-public static class RectTransformExtensions
-{
-    public static void SetLeft(this RectTransform rt, float left)
-    {
-        rt.offsetMin = new Vector2(left, rt.offsetMin.y);
+        _textOriginalPos = _tabItems[source].textRect.anchoredPosition;
     }
 
-    public static void SetRight(this RectTransform rt, float right)
+    private void ApplyJump(RectTransform rt, Vector2 originalPos, bool isSelected)
     {
-        rt.offsetMax = new Vector2(-right, rt.offsetMax.y);
-    }
-
-    public static void SetTop(this RectTransform rt, float top)
-    {
-        rt.offsetMax = new Vector2(rt.offsetMax.x, -top);
-    }
-
-    public static void SetBottom(this RectTransform rt, float bottom)
-    {
-        rt.offsetMin = new Vector2(rt.offsetMin.x, bottom);
-    }
-
-    public static float GetLeft(this RectTransform rt)
-    {
-        return rt.offsetMin.x;
-    }
-
-    public static float GetRight(this RectTransform rt)
-    {
-        return -rt.offsetMax.x;
-    }
-
-    public static float GetTop(this RectTransform rt)
-    {
-        return -rt.offsetMax.y;
-    }
-
-    public static float GetBottom(this RectTransform rt)
-    {
-        return rt.offsetMin.y;
+        if (!isSelected)
+        {
+            rt.anchoredPosition = originalPos;
+            return;
+        }
+        rt.anchoredPosition = _tabLayout == TabLayout.Horizontal
+            ? new Vector2(originalPos.x, originalPos.y + _jump)
+            : new Vector2(originalPos.x + _jump, originalPos.y);
     }
 }
